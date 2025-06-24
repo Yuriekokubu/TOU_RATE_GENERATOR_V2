@@ -320,43 +320,70 @@
 
             let billingPeriodStartDate, billingPeriodEndDate;
 
-            // Determine the month and year for the *previous* reading
-            let prevReadingMonth = selectedMonth - 1; // 1-indexed month
-            let prevReadingYear = selectedYear;
-            if (prevReadingMonth === 0) { // If current month is January, previous is December of last year
-                prevReadingMonth = 12;
-                prevReadingYear--;
+            if (arType === 'HA1') {
+                // For HA1, billing period is from 00:15 of the 1st of selectedMonth
+                // to 00:00 of the 1st of the NEXT month.
+
+                billingPeriodStartDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, 1); // 1st of selected month
+                billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
+
+                let nextMonth = selectedMonth + 1;
+                let nextMonthYear = selectedYear;
+                if (nextMonth > 12) {
+                    nextMonth = 1;
+                    nextMonthYear++;
+                }
+                billingPeriodEndDate = getBKKMidnightUTCAdjusted(nextMonthYear, nextMonth - 1, 1); // 1st of next month
+
+            } else {
+                // Existing logic for AR1 and AR6
+                // Determine the month and year for the *previous* reading
+                let prevReadingMonth = selectedMonth - 1; // 1-indexed month
+                let prevReadingYear = selectedYear;
+                if (prevReadingMonth === 0) { // If current month is January, previous is December of last year
+                    prevReadingMonth = 12;
+                    prevReadingYear--;
+                }
+
+                // Determine the reading day for the previous month based on its number of days
+                const prevReadingDay = getReadingDay(prevReadingYear, prevReadingMonth, arType);
+                if (prevReadingDay === -1) {
+                    console.warn(`[isInBillingPeriod] Could not determine prevReadingDay for ${prevReadingYear}-${prevReadingMonth}`);
+                    return false;
+                }
+
+                // Calculate the start date of the billing period
+                // It's the previous month's reading date at 00:15:00 BKK (UTC components match BKK)
+                billingPeriodStartDate = getBKKMidnightUTCAdjusted(prevReadingYear, prevReadingMonth - 1, prevReadingDay); // monthIndex is 0-indexed for getBKKMidnightUTCAdjusted
+                billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
+
+
+                // Determine the reading day for the *current* billing month based on its number of days
+                const currentReadingDay = getReadingDay(selectedYear, selectedMonth, arType);
+                if (currentReadingDay === -1) {
+                    console.warn(`[isInBillingPeriod] Could not determine currentReadingDay for ${selectedYear}-${selectedMonth}`);
+                    return false;
+                }
+
+                // Calculate the end date of the billing period
+                // It's the current month's reading date at 00:00:00 BKK (of the *next* day) (UTC components match BKK)
+                thisMonthReadingDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, currentReadingDay); // monthIndex is 0-indexed
+                billingPeriodEndDate = new Date(thisMonthReadingDate.getTime()); // Copy the date
+                billingPeriodEndDate.setUTCHours(0); // Set to midnight of the reading day itself
+                billingPeriodEndDate.setUTCMinutes(0);
+                billingPeriodEndDate.setUTCSeconds(0);
+                // The current logic of checking <= dateObject.getTime() for end date automatically includes
+                // data up to 24:00:00 of the reading day (which is 00:00:00 of the next day)
+                // So, if reading day is 21st, data up to 21st 24:00 (i.e., 22nd 00:00) is included.
+                // This seems consistent with the original intent.
             }
-
-            // Determine the reading day for the previous month based on its number of days
-            const prevReadingDay = getReadingDay(prevReadingYear, prevReadingMonth, arType);
-            if (prevReadingDay === -1) {
-                console.warn(`[isInBillingPeriod] Could not determine prevReadingDay for ${prevReadingYear}-${prevReadingMonth}`);
-                return false;
-            }
-
-            // Calculate the start date of the billing period
-            // It's the previous month's reading date at 00:15:00 BKK (UTC components match BKK)
-            billingPeriodStartDate = getBKKMidnightUTCAdjusted(prevReadingYear, prevReadingMonth - 1, prevReadingDay); // monthIndex is 0-indexed for getBKKMidnightUTCAdjusted
-            billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
-
-
-            // Determine the reading day for the *current* billing month based on its number of days
-            const currentReadingDay = getReadingDay(selectedYear, selectedMonth, arType);
-            if (currentReadingDay === -1) {
-                console.warn(`[isInBillingPeriod] Could not determine currentReadingDay for ${selectedYear}-${selectedMonth}`);
-                return false;
-            }
-
-            // Calculate the end date of the billing period
-            // It's the current month's reading date at 00:00:00 BKK (of the *next* day) (UTC components match BKK)
-            // This ensures data up to 24:00:00 (which is 00:00:00 of the next day) of the reading day is included.
-            billingPeriodEndDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, currentReadingDay); // monthIndex is 0-indexed
 
             // LOG: Check calculated startDate and endDate.
             // console.log(`[isInBillingPeriod] Comparing: Date: ${dateObject.toISOString()} vs Start: ${billingPeriodStartDate.toISOString()} End: ${billingPeriodEndDate.toISOString()}`);
 
             // CHANGE: Changed from < to <= to include the exact 00:00:00 of the next day.
+            // For HA1, this means data up to 00:00:00 of the 1st of the next month (exclusive of 00:15)
+            // For AR1/AR6, data up to 00:00:00 of the day *after* the reading day is included
             return dateObject.getTime() >= billingPeriodStartDate.getTime() && dateObject.getTime() <= billingPeriodEndDate.getTime();
         }
 
@@ -775,44 +802,63 @@
         function getBillingPeriodDates(selectedYear, selectedMonth, arType) {
             let billingPeriodStartDate, billingPeriodEndDate;
 
-            // Determine the month and year for the *previous* reading
-            let prevReadingMonth = selectedMonth - 1; // 1-indexed month
-            let prevReadingYear = selectedYear;
-            if (prevReadingMonth === 0) { // If current month is January, previous is December of last year
-                prevReadingMonth = 12;
-                prevReadingYear--;
+            if (arType === 'HA1') {
+                // HA1: From 00:15 of the 1st of selectedMonth to 00:00 of the 1st of the NEXT month.
+                billingPeriodStartDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, 1); // 1st of selected month
+                billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
+
+                let nextMonth = selectedMonth + 1;
+                let nextMonthYear = selectedYear;
+                if (nextMonth > 12) {
+                    nextMonth = 1;
+                    nextMonthYear++;
+                }
+                billingPeriodEndDate = getBKKMidnightUTCAdjusted(nextMonthYear, nextMonth - 1, 1); // 1st of next month
+
+            } else {
+                // Existing logic for AR1 and AR6
+                // Determine the month and year for the *previous* reading
+                let prevReadingMonth = selectedMonth - 1; // 1-indexed month
+                let prevReadingYear = selectedYear;
+                if (prevReadingMonth === 0) { // If current month is January, previous is December of last year
+                    prevReadingMonth = 12;
+                    prevReadingYear--;
+                }
+
+                // Determine the reading day for the previous month based on its number of days
+                const prevReadingDay = getReadingDay(prevReadingYear, prevReadingMonth, arType);
+                if (prevReadingDay === -1) {
+                    console.error(`[getBillingPeriodDates] Failed to get previous reading day for ${prevReadingYear}-${prevReadingMonth}`);
+                    return {
+                        startDate: null,
+                        endDate: null
+                    };
+                }
+
+                // Calculate the start date of the billing period
+                // It's the previous month's reading date at 00:15:00 BKK (UTC components match BKK)
+                billingPeriodStartDate = getBKKMidnightUTCAdjusted(prevReadingYear, prevReadingMonth - 1, prevReadingDay); // monthIndex is 0-indexed for getBKKMidnightUTCAdjusted
+                billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
+
+
+                // Determine the reading day for the *current* billing month based on its number of days
+                const currentReadingDay = getReadingDay(selectedYear, selectedMonth, arType);
+                if (currentReadingDay === -1) {
+                    console.error(`[getBillingPeriodDates] Failed to get current reading day for ${selectedYear}-${selectedMonth}`);
+                    return {
+                        startDate: null,
+                        endDate: null
+                    };
+                }
+
+                // Calculate the end date of the billing period
+                // It's the current month's reading date at 00:00:00 BKK (of the *next* day) (UTC components match BKK)
+                thisMonthReadingDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, currentReadingDay); // monthIndex is 0-indexed
+                billingPeriodEndDate = new Date(thisMonthReadingDate.getTime()); // Copy the date
+                billingPeriodEndDate.setUTCHours(0); // Set to midnight of the reading day itself
+                billingPeriodEndDate.setUTCMinutes(0);
+                billingPeriodEndDate.setUTCSeconds(0);
             }
-
-            // Determine the reading day for the previous month based on its number of days
-            const prevReadingDay = getReadingDay(prevReadingYear, prevReadingMonth, arType);
-            if (prevReadingDay === -1) {
-                console.error(`[getBillingPeriodDates] Failed to get previous reading day for ${prevReadingYear}-${prevReadingMonth}`);
-                return {
-                    startDate: null,
-                    endDate: null
-                };
-            }
-
-            // Calculate the start date of the billing period
-            // It's the previous month's reading date at 00:15:00 BKK (UTC components match BKK)
-            billingPeriodStartDate = getBKKMidnightUTCAdjusted(prevReadingYear, prevReadingMonth - 1, prevReadingDay); // monthIndex is 0-indexed for getBKKMidnightUTCAdjusted
-            billingPeriodStartDate.setMinutes(billingPeriodStartDate.getMinutes() + 15);
-
-
-            // Determine the reading day for the *current* billing month based on its number of days
-            const currentReadingDay = getReadingDay(selectedYear, selectedMonth, arType);
-            if (currentReadingDay === -1) {
-                console.error(`[getBillingPeriodDates] Failed to get current reading day for ${selectedYear}-${selectedMonth}`);
-                return {
-                    startDate: null,
-                    endDate: null
-                };
-            }
-
-            // Calculate the end date of the billing period
-            // It's the current month's reading date at 00:00:00 BKK (of the *next* day) (UTC components match BKK)
-            billingPeriodEndDate = getBKKMidnightUTCAdjusted(selectedYear, selectedMonth - 1, currentReadingDay); // monthIndex is 0-indexed
-
 
             return {
                 startDate: billingPeriodStartDate,
